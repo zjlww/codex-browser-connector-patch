@@ -27,6 +27,32 @@ CFBundleShortVersionString: 26.928.21956
 - 如果 `--check` 输出 `unknown`、`partial` 或 `--apply` 报告匹配数量异常，
   不要强行绕过错误，应先根据新版文件更新匹配规则。
 
+> **重要提醒：** Codex 每次更新后，都应重新运行补丁检查。如果应用更新导致
+> 补丁失效、出现新的安全门，或 `--check` 不再返回全部 `patched`，请回来更新
+> 这个公开补丁后再继续使用。不要因为旧 marker 仍然存在就假定补丁仍然有效。
+
+建议的更新处理流程：
+
+1. 查看当前应用版本：
+
+   ```sh
+   defaults read /Applications/ChatGPT.app/Contents/Info CFBundleShortVersionString
+   ```
+
+2. 重新运行：
+
+   ```sh
+   python3 ~/.local/share/codex-rollback/patch-browser-connector.py --check
+   ```
+
+3. 如果结果不是全部 `patched`，在本仓库提交 issue 或 pull request，附上：
+   - 当前 Codex 版本。
+   - 完整错误信息。
+   - `--check` 输出。
+   - 新版 `browser-service.mjs` 中发生变化的错误字符串或函数片段。
+
+4. 更新匹配规则并重新验证后，再发布新的补丁版本。
+
 ## 适用环境
 
 - 系统：macOS
