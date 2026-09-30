@@ -69,7 +69,8 @@ Version notes:
 
 ## Background and Root Causes
 
-The browser runtime can fail at four application-controlled gates:
+The browser runtime can fail at five layers. Gates 1–4 are app/browser-service
+gates; the fifth is the Electron host's browser-session route:
 
 | Gate | Common error | Patch behavior |
 | --- | --- | --- |
@@ -77,6 +78,7 @@ The browser runtime can fail at four application-controlled gates:
 | Identity lookup | `User unavailable` | The `aura/identity` lookup is replaced with a local synthetic user. |
 | Request-header policy | `Unable to load browser request-header policy` | The Statsig-backed request-header gate returns `false` locally. |
 | Enterprise origin policy | `The admin-enforced policy could not be verified` | `getOriginPolicyDecision()` returns a local `null` result instead of querying the remote enterprise-policy source. |
+| Browser session route | `No ChatGPT browser route is available for browser session ...` | The Electron host must register an IAB route and connect the native browser pipe; on `26.928.21956`, this recovered once the shim could start the real Codex CLI. |
 
 These gates assume a signed-in ChatGPT account and access to remote identity,
 Statsig, and enterprise-policy services. In API-key or custom-provider mode, any
@@ -109,6 +111,25 @@ The old shim therefore exited immediately. Basic browser navigation could still
 work through other local patches, but `configRequirements/read` could not
 complete. `fullCdpAccessState()` then failed closed and the tab did not expose
 the `cdp` capability.
+
+The missing CLI also left the Electron host without a healthy app-server route.
+The host logged:
+
+```text
+No ChatGPT browser route is available for browser session <session-id>
+```
+
+After the shim was repaired, the same host logged:
+
+```text
+captured session route conversationId=<session-id>
+browser-use native pipe listening pipePath=/tmp/codex-browser-use/<id>.sock
+browser_use_iab_backend_startup_ready backend=iab
+```
+
+This is why repairing only gates 1–4 can still leave IAB incomplete. The
+browser-service may advertise an IAB backend, but the Electron host must also
+register the route and native pipe for the current conversation.
 
 ## What the Patch Does
 
@@ -337,6 +358,9 @@ markers, and regular expressions in
 ## Known Limitations
 
 - The patch depends on minified JavaScript from a specific Codex release.
+- Gate 5 is host-side route registration. If `No ChatGPT browser route` remains
+  after the shim and app-server are healthy, the failure is outside the four
+  browser-service gates and requires a host/session lifecycle fix.
 - Only the built-in browser has been fully verified; Chrome extension navigation
   has not been separately exercised in every release.
 - CDP requires full CDP to be enabled in `browser/config.toml` and requires the
