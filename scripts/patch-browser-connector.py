@@ -53,6 +53,7 @@ ROLLBACK_DIR = os.path.expanduser(
 )
 BACKUP_DIR = os.path.join(ROLLBACK_DIR, "appbundle-orig")
 SHIM = os.path.join(ROLLBACK_DIR, "codex-auth-shim.py")
+SHIM_MARKER = "codex-auth-shim-v2"
 NODE_REPL = os.path.join(RESOURCES, "cua_node/bin/node_repl")
 NODE_REPL_VENDOR = os.path.join(RESOURCES, "cua_node/bin/node_repl-vendor")
 CODEX_HOME = os.path.expanduser(os.environ.get("CODEX_HOME", "~/.codex"))
@@ -206,6 +207,13 @@ def node_repl_status():
     return "unpatched"
 
 
+def shim_status():
+    if not os.path.exists(SHIM):
+        return "missing"
+    body = open(SHIM, encoding="utf-8", errors="replace").read()
+    return "patched" if SHIM_MARKER in body else "outdated"
+
+
 def check():
     print("app version: %s" % app_version())
     ok = True
@@ -216,7 +224,9 @@ def check():
     status = node_repl_status()
     ok = ok and status == "patched"
     print("%-9s %s" % (status, NODE_REPL))
-    print("shim: %s" % ("present" if os.path.exists(SHIM) else "missing"))
+    status = shim_status()
+    ok = ok and status == "patched"
+    print("%-9s %s" % (status, SHIM))
     return 0 if ok else 1
 
 
@@ -233,8 +243,8 @@ def app_version():
 
 def apply_patch():
     os.makedirs(BACKUP_DIR, exist_ok=True)
-    if not os.path.exists(SHIM):
-        sys.exit("shim missing at %s; run deploy.sh first" % SHIM)
+    if shim_status() != "patched":
+        sys.exit("shim missing or outdated at %s; run deploy.sh first" % SHIM)
     for path, backup in mjs_targets():
         if not os.path.exists(path):
             print("skip (not present): %s" % path)

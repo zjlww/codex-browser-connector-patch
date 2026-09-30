@@ -11,6 +11,9 @@ Privacy: by default only method names and rewrites are logged, never payloads
 (earlier revisions logged up to 600 characters of every message, which could
 capture message content). Set CODEX_AUTH_SHIM_LOG_PAYLOADS=1 to log payloads
 while debugging.
+
+codex-auth-shim-v2: discover the real CLI under the installed app instead of
+assuming the pre-26.928 Resources/codex path.
 """
 import base64
 import json
@@ -20,9 +23,30 @@ import sys
 import threading
 import time
 
-REAL_CLI = os.environ.get(
-    "CODEX_AUTH_SHIM_REAL_CLI", "/Applications/ChatGPT.app/Contents/Resources/codex"
+APP = os.path.expanduser(
+    os.environ.get("CHATGPT_APP", "/Applications/ChatGPT.app")
 )
+
+
+def find_real_cli():
+    explicit = os.environ.get("CODEX_AUTH_SHIM_REAL_CLI")
+    if explicit:
+        return explicit
+    candidates = [
+        os.path.join(APP, "Contents/Resources/codex"),
+        os.path.join(APP, "Contents/Resources/codex-cli/bin/codex"),
+        os.path.join(
+            APP,
+            "Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex",
+        ),
+    ]
+    for candidate in candidates:
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    return candidates[0]
+
+
+REAL_CLI = find_real_cli()
 ROLLBACK_DIR = os.path.expanduser(
     os.environ.get("CODEX_BROWSER_ROLLBACK_DIR", "~/.local/share/codex-rollback")
 )
@@ -100,7 +124,10 @@ def current_token():
 
 
 def main():
-    log("start", "argv=%s" % " ".join(sys.argv[1:]))
+    log("start", "cli=%s argv=%s" % (REAL_CLI, " ".join(sys.argv[1:])))
+    if not os.path.isfile(REAL_CLI) or not os.access(REAL_CLI, os.X_OK):
+        log("error", "real CLI missing: %s" % REAL_CLI)
+        sys.exit("real Codex CLI not found: %s" % REAL_CLI)
     child = subprocess.Popen(
         [REAL_CLI] + sys.argv[1:],
         stdin=subprocess.PIPE,

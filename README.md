@@ -19,7 +19,8 @@ CFBundleShortVersionString: 26.928.21956
 
 适用范围说明：
 
-- `26.928.21956`：已完整验证，包括内置浏览器导航和 Codex 原生 computer use。
+- `26.928.21956`：已完整验证，包括内置浏览器导航、Codex 原生 computer use，
+  以及 in-app browser 的原始 CDP `Runtime.evaluate` 调用。
 - 更早版本：脚本中保留了旧的补丁 marker，但本公开版本没有重新验证旧应用。
 - 更高或未知版本：不保证可用。Codex 更新通常会改变压缩后的 JavaScript、
   函数名和补丁点，必须重新执行 `--check` 并检查新的
@@ -84,6 +85,22 @@ CFBundleShortVersionString: 26.928.21956
 已经应用，仍会在导航前失败。补丁脚本现在还会识别 `partial`，避免把只完成旧
 版本修补的文件误报为完全可用。
 
+CDP 还依赖 auth shim 成功启动真实 Codex CLI。`26.928.21956` 把 CLI 从：
+
+```text
+Contents/Resources/codex
+```
+
+移动到了：
+
+```text
+Contents/Resources/codex-cli/bin/codex
+```
+
+旧 shim 因此启动失败。浏览器基本导航可以由其他本地补丁继续工作，但
+`configRequirements/read` 无法完成，`fullCdpAccessState()` 会按 fail-closed
+设计返回 disabled，最终导致标签页没有 `cdp` capability。
+
 ## 补丁具体做了什么
 
 ### 1. 替换 `node_repl` 启动入口
@@ -106,6 +123,18 @@ CFBundleShortVersionString: 26.928.21956
 
 这个 token 只用于通过本地 node runtime 的检查。shim 不会把账号、密码、Cookie
 或用户凭据写入仓库。
+
+当前 shim 会按以下顺序自动寻找真实 CLI：
+
+1. `CHATGPT_APP/Contents/Resources/codex`
+2. `CHATGPT_APP/Contents/Resources/codex-cli/bin/codex`
+3. `CHATGPT_APP/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex`
+
+也可以显式指定：
+
+```sh
+export CODEX_AUTH_SHIM_REAL_CLI="/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex"
+```
 
 ### 3. 修复浏览器 service 的四个检查
 
@@ -135,6 +164,40 @@ Codex 的浏览器 service 是长时间驻留的进程。修改磁盘上的
 `browser-service.mjs` 或 `node_repl` 后，仅调用 `js_reset` 不会替换已经加载
 旧代码的 service supervisor。必须完整退出并重新启动 `ChatGPT.app`，新进程
 才会从磁盘加载补丁版本。
+
+## CDP 支持
+
+如果 `~/.codex/browser/config.toml` 中有：
+
+```toml
+full_cdp_access_enabled = true
+```
+
+修复后的 shim 能让 browser-service 成功读取 `configRequirements/read`，并在
+支持的内置浏览器标签页上注册 `cdp` capability。
+
+验证方式：
+
+```js
+await agent.documentation.get("capabilities/tab/cdp");
+const tab = await cua.createBrowserTab("iab", "https://example.com");
+const capabilities = await tab.capabilities.list();
+const cdp = await tab.capabilities.get("cdp");
+const result = await cdp.send("Runtime.evaluate", {
+  expression: "({title: document.title, url: location.href})",
+  returnByValue: true,
+});
+```
+
+预期 capability 列表包含：
+
+```text
+pageAssets, webmcp, cdp
+```
+
+预期 CDP 返回 Example Domain 的标题和 URL。修改
+`full_cdp_access_enabled` 后仍建议完整重启应用，避免旧 service 继续使用
+启动时缓存的状态。
 
 ## 使用方法
 
@@ -224,7 +287,7 @@ bash ~/.local/share/codex-rollback/restore-appbundle.sh
 | `CHATGPT_APP` | `/Applications/ChatGPT.app` | 应用路径 |
 | `CODEX_BROWSER_ROLLBACK_DIR` | `~/.local/share/codex-rollback` | 备份和辅助脚本目录 |
 | `CODEX_HOME` | `~/.codex` | Codex 配置和插件缓存目录 |
-| `CODEX_AUTH_SHIM_REAL_CLI` | 应用内 `codex` 可执行文件 | shim 代理的真实 CLI |
+| `CODEX_AUTH_SHIM_REAL_CLI` | 自动发现应用内 `codex` 可执行文件 | 显式覆盖 shim 代理的真实 CLI |
 
 ## 目录结构
 
@@ -262,6 +325,8 @@ python3 ~/.local/share/codex-rollback/patch-browser-connector.py --check
 
 - 补丁针对特定 Codex 版本的 minified JavaScript，版本变化后需要重新验证。
 - 只验证了内置浏览器；Chrome 扩展导航未在每次测试中单独执行。
+- CDP 仍然要求 `browser/config.toml` 允许 full CDP，并且 auth shim 能找到
+  当前版本的 Codex CLI。
 - Gate 4 会绕过企业来源策略。
 - 修改应用包会破坏代码签名。
 - 不保证未来版本仍可使用相同的补丁点。
