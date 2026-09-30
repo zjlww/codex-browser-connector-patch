@@ -1,182 +1,197 @@
 # Codex Browser Connector Patch
 
-这是一个面向 macOS 版 Codex / ChatGPT 桌面应用的本地兼容性补丁，用于在
-Codex 使用 API Key、没有 ChatGPT 账号登录时恢复内置浏览器和 Chrome
-连接器。
+A local compatibility patch for the macOS Codex / ChatGPT desktop app. It
+restores the built-in browser and Chrome connector when Codex uses API-key
+authentication or a custom model endpoint without a ChatGPT account session.
 
-> 这不是 OpenAI 官方项目，也不受 OpenAI 支持。它通过修改应用包内的文件来
-> 绕过认证、请求头策略和企业来源策略，可能导致应用签名失效、功能不稳定，
-> 也可能不符合服务条款。请只在明确了解风险的前提下用于本机兼容性修复。
+> This is not an OpenAI project and is not supported by OpenAI. It modifies
+> files inside the installed application and bypasses authentication,
+> request-header, enterprise-policy, and CDP gates. It invalidates the app code
+> signature and may violate the applicable terms of service. Use it only for
+> local compatibility work after understanding the risks.
 
-## 适用版本
+## Applicable Version
 
-本公开补丁的完整验证版本是：
+The fully verified version is:
 
 ```text
 Codex Desktop / ChatGPT.app
 CFBundleShortVersionString: 26.928.21956
 ```
 
-适用范围说明：
+Version notes:
 
-- `26.928.21956`：已完整验证，包括内置浏览器导航、Codex 原生 computer use，
-  以及 in-app browser 的原始 CDP `Runtime.evaluate` 调用。
-- 更早版本：脚本中保留了旧的补丁 marker，但本公开版本没有重新验证旧应用。
-- 更高或未知版本：不保证可用。Codex 更新通常会改变压缩后的 JavaScript、
-  函数名和补丁点，必须重新执行 `--check` 并检查新的
-  `browser-service.mjs`。
-- 如果 `--check` 输出 `unknown`、`partial` 或 `--apply` 报告匹配数量异常，
-  不要强行绕过错误，应先根据新版文件更新匹配规则。
+- `26.928.21956`: verified, including in-app browser navigation, native Codex
+  computer use, and a raw CDP `Runtime.evaluate` call.
+- Older versions: the scripts retain legacy patch markers, but this public
+  release was not revalidated against older application builds.
+- Newer or unknown versions: support is not guaranteed. Codex updates commonly
+  rename minified functions, move executables, and add fail-closed checks.
+- If `--check` reports `unknown`, `partial`, or an unexpected regex match count,
+  update the matching rules instead of forcing the patch.
 
-> **重要提醒：** Codex 每次更新后，都应重新运行补丁检查。如果应用更新导致
-> 补丁失效、出现新的安全门，或 `--check` 不再返回全部 `patched`，请回来更新
-> 这个公开补丁后再继续使用。不要因为旧 marker 仍然存在就假定补丁仍然有效。
+> **Important:** Run the patch check after every Codex update. If the update
+> breaks the patch or creates a new browser gate, update this repository before
+> continuing. A surviving old marker does not prove that the patch is still
+> effective.
 
-建议的更新处理流程：
+### Suggested Update Workflow
 
-1. 查看当前应用版本：
+1. Check the installed version:
 
    ```sh
    defaults read /Applications/ChatGPT.app/Contents/Info CFBundleShortVersionString
    ```
 
-2. 重新运行：
+2. Check the patch:
 
    ```sh
    python3 ~/.local/share/codex-rollback/patch-browser-connector.py --check
    ```
 
-3. 如果结果不是全部 `patched`，在本仓库提交 issue 或 pull request，附上：
-   - 当前 Codex 版本。
-   - 完整错误信息。
-   - `--check` 输出。
-   - 新版 `browser-service.mjs` 中发生变化的错误字符串或函数片段。
+3. If any target is not `patched`, open an issue or pull request and include:
+   - the Codex version;
+   - the complete error message;
+   - the `--check` output;
+   - the changed error string or function fragment from the new
+     `browser-service.mjs`.
 
-4. 更新匹配规则并重新验证后，再发布新的补丁版本。
+4. Update the matching rules, re-run the verification, and publish the new
+   revision only after CDP and navigation work again.
 
-## 适用环境
+## Supported Environment
 
-- 系统：macOS
-- 应用：`/Applications/ChatGPT.app`
-- 需要系统自带的 `/usr/bin/python3`
-- 默认不要求 root，但需要当前用户对应用目录有写权限
+- macOS
+- `/Applications/ChatGPT.app`
+- Apple's `/usr/bin/python3`
+- No root access is required by default, but the current user must be able to
+  write to the application bundle.
 
-## 背景和问题原因
+## Background and Root Causes
 
-新版 Codex 桌面应用在以下四个位置会阻止无 ChatGPT 账号环境继续使用浏览器：
+The browser runtime can fail at four application-controlled gates:
 
-| 检查 | 常见错误 | 处理方式 |
+| Gate | Common error | Patch behavior |
 | --- | --- | --- |
-| 认证状态 | `Codex auth token is unavailable` | 用本地 shim 代理 `codex app-server`，只改写未登录的 `getAuthStatus` 响应 |
-| 身份查询 | `User unavailable` | 把 `aura/identity` 查询替换为本地 synthetic user |
-| 请求头策略 | `Unable to load browser request-header policy` | 关闭依赖 Statsig 的远程请求头开关 |
-| 企业来源策略 | `The admin-enforced policy could not be verified` | `getOriginPolicyDecision()` 改为返回本地 `null`，不查询远端企业策略 |
+| Authentication | `Codex auth token is unavailable` | A local shim proxies the Codex app-server and rewrites only the unauthenticated `getAuthStatus` response. |
+| Identity lookup | `User unavailable` | The `aura/identity` lookup is replaced with a local synthetic user. |
+| Request-header policy | `Unable to load browser request-header policy` | The Statsig-backed request-header gate returns `false` locally. |
+| Enterprise origin policy | `The admin-enforced policy could not be verified` | `getOriginPolicyDecision()` returns a local `null` result instead of querying the remote enterprise-policy source. |
 
-这些检查的共同原因是：上游实现默认用户已经登录 ChatGPT，并且能够访问远程
-身份、Statsig 和企业策略服务。API Key 或无账号模式下，任意一个检查失败都会
-按 fail-closed 设计终止浏览器操作。
+These gates assume a signed-in ChatGPT account and access to remote identity,
+Statsig, and enterprise-policy services. In API-key or custom-provider mode, any
+failed check can terminate the browser flow by design.
 
-旧版本补丁只处理了：
+The original compatibility patch handled only:
 
-- `getAuthStatus` 没有认证 token。
-- `chatgpt.com/backend-api/aura/identity` 返回 `User unavailable`。
+- `getAuthStatus` returning no authentication token;
+- `chatgpt.com/backend-api/aura/identity` returning `User unavailable`.
 
-`26.928.21956` 又增加了 Statsig 请求头策略和企业来源策略检查。因此旧补丁即使
-已经应用，仍会在导航前失败。补丁脚本现在还会识别 `partial`，避免把只完成旧
-版本修补的文件误报为完全可用。
+Codex `26.928.21956` added the Statsig request-header policy and enterprise
+origin-policy checks. The old patch could therefore still report success while
+navigation failed. The current script also reports `partial`, so an old partial
+patch is not mistaken for a complete one.
 
-CDP 还依赖 auth shim 成功启动真实 Codex CLI。`26.928.21956` 把 CLI 从：
+CDP also depends on the authentication shim successfully starting the real
+Codex CLI. In `26.928.21956`, the CLI moved from:
 
 ```text
 Contents/Resources/codex
 ```
 
-移动到了：
+to:
 
 ```text
 Contents/Resources/codex-cli/bin/codex
 ```
 
-旧 shim 因此启动失败。浏览器基本导航可以由其他本地补丁继续工作，但
-`configRequirements/read` 无法完成，`fullCdpAccessState()` 会按 fail-closed
-设计返回 disabled，最终导致标签页没有 `cdp` capability。
+The old shim therefore exited immediately. Basic browser navigation could still
+work through other local patches, but `configRequirements/read` could not
+complete. `fullCdpAccessState()` then failed closed and the tab did not expose
+the `cdp` capability.
 
-## 补丁具体做了什么
+## What the Patch Does
 
-### 1. 替换 `node_repl` 启动入口
+### 1. Replaces the `node_repl` Entry Point
 
-原始二进制会被保留为：
+The original binary is preserved as:
 
 ```text
 /Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node_repl-vendor
 ```
 
-新的 `node_repl` 是一个很小的 shell wrapper。它只对 Codex 的 node runtime
-设置 `CODEX_CLI_PATH`，指向本地 `codex-auth-shim.py`。应用自己的 app-server
-仍然使用原始 Codex CLI，不受影响。
+The new `node_repl` is a small shell wrapper. It sets `CODEX_CLI_PATH` only for
+the Codex node runtime and points it at the local `codex-auth-shim.py`. The
+application's own app-server continues to use the real Codex CLI.
 
-### 2. 用 shim 改写本地认证状态
+### 2. Rewrites the Local Authentication State in the Shim
 
-`codex-auth-shim.py` 启动真实 Codex CLI，并转发它的 JSON-RPC 消息。唯一改动
-是：当真实 CLI 返回未登录的 `getAuthStatus` 时，shim 返回一个本地的
-`chatgpt` synthetic token。
+`codex-auth-shim.py` starts the real Codex CLI and forwards its JSON-RPC
+messages. The only modified response is the unauthenticated `getAuthStatus`
+result, which is replaced with a local synthetic `chatgpt` token.
 
-这个 token 只用于通过本地 node runtime 的检查。shim 不会把账号、密码、Cookie
-或用户凭据写入仓库。
+The token is used only to pass the local node-runtime check. The repository does
+not contain account credentials, passwords, cookies, or user data.
 
-当前 shim 会按以下顺序自动寻找真实 CLI：
+The shim searches for the real CLI in this order:
 
 1. `CHATGPT_APP/Contents/Resources/codex`
 2. `CHATGPT_APP/Contents/Resources/codex-cli/bin/codex`
 3. `CHATGPT_APP/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex`
 
-也可以显式指定：
+An explicit path can also be supplied:
 
 ```sh
 export CODEX_AUTH_SHIM_REAL_CLI="/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex"
 ```
 
-### 3. 修复浏览器 service 的四个检查
+### 3. Patches the Browser Service Gates
 
-`patch-browser-connector.py` 会修改应用包和插件缓存中的
-`browser-service.mjs`：
+`patch-browser-connector.py` modifies the application-bundle and plugin-cache
+copies of `browser-service.mjs`:
 
-1. `getAuthStatus` 由 wrapper 和 shim 处理。
-2. `aura/identity` 查询替换成 synthetic user。
-3. Statsig 请求头 gate 直接返回 `false`。
-4. `getOriginPolicyDecision()` 返回本地 `null`，不再查询远端企业策略。
+1. `getAuthStatus` is handled by the wrapper and shim.
+2. The `aura/identity` lookup is replaced with a synthetic user.
+3. The Statsig request-header gate returns `false`.
+4. `getOriginPolicyDecision()` returns a local `null` result.
 
-所有原始文件会先备份到 `appbundle-orig/`，并写入 marker，便于 `--check` 判断
-完整、部分或未知状态。
+Every original file is backed up under `appbundle-orig/`. Markers allow
+`--check` to distinguish complete, partial, and unknown patch states.
 
-## 安全边界
+## Security Boundaries
 
-- 脚本不会写入 ChatGPT 用户名、密码、Cookie 或 API Key。
-- `codex-auth-shim.py` 只在本地生成一个 synthetic token，用于通过应用内部检查。
-- Gate 4 会绕过应用的企业来源策略。每站点的持久化用户授权逻辑仍然存在，
-  但管理端来源策略不再作为导航条件。
-- 修改后应用签名会失效，这是补丁生效的预期结果。
-- 每次应用更新都可能覆盖这些文件，需要重新执行 `--check` 和 `--apply`。
+- The scripts do not write ChatGPT usernames, passwords, cookies, or API keys.
+- `codex-auth-shim.py` generates a synthetic token locally for the internal
+  application check.
+- Gate 4 bypasses the application's enterprise origin-policy source. Persisted
+  per-origin user permissions remain a separate check.
+- Modifying the application bundle invalidates its code signature.
+- Every application update can overwrite the patched files. Re-run `--check` and
+  `--apply` after each update.
 
-## 为什么需要完整重启应用
+## Why a Full Application Restart Is Required
 
-Codex 的浏览器 service 是长时间驻留的进程。修改磁盘上的
-`browser-service.mjs` 或 `node_repl` 后，仅调用 `js_reset` 不会替换已经加载
-旧代码的 service supervisor。必须完整退出并重新启动 `ChatGPT.app`，新进程
-才会从磁盘加载补丁版本。
+The Codex browser service is a long-running process. After changing
+`browser-service.mjs` or `node_repl` on disk, `js_reset` alone does not replace
+the resident browser-service supervisor. The app must be fully stopped and
+started so the new process loads the patched files.
 
-## CDP 支持
+Changing `full_cdp_access_enabled` should also be followed by a full application
+restart, because the resident service may retain the value loaded at startup.
 
-如果 `~/.codex/browser/config.toml` 中有：
+## CDP Support
+
+When `~/.codex/browser/config.toml` contains:
 
 ```toml
 full_cdp_access_enabled = true
 ```
 
-修复后的 shim 能让 browser-service 成功读取 `configRequirements/read`，并在
-支持的内置浏览器标签页上注册 `cdp` capability。
+the repaired shim allows browser-service to complete
+`configRequirements/read` and expose the `cdp` capability on supported in-app
+browser tabs.
 
-验证方式：
+Verification:
 
 ```js
 await agent.documentation.get("capabilities/tab/cdp");
@@ -189,70 +204,66 @@ const result = await cdp.send("Runtime.evaluate", {
 });
 ```
 
-预期 capability 列表包含：
+Expected capability list:
 
 ```text
 pageAssets, webmcp, cdp
 ```
 
-预期 CDP 返回 Example Domain 的标题和 URL。修改
-`full_cdp_access_enabled` 后仍建议完整重启应用，避免旧 service 继续使用
-启动时缓存的状态。
+The CDP request should return the Example Domain title and URL.
 
-## 使用方法
+## Usage
 
-### 1. 克隆仓库
+### 1. Clone
 
 ```sh
 git clone https://github.com/zjlww/codex-browser-connector-patch.git
 cd codex-browser-connector-patch
 ```
 
-### 2. 部署辅助脚本
+### 2. Deploy the Helper Scripts
 
 ```sh
 bash scripts/deploy.sh
 ```
 
-脚本默认部署到：
+The default destination is:
 
 ```text
 ~/.local/share/codex-rollback/
 ```
 
-### 3. 检查状态
+### 3. Check the Patch State
 
 ```sh
 python3 ~/.local/share/codex-rollback/patch-browser-connector.py --check
 ```
 
-退出码为 `0` 表示全部目标已经修补。`partial` 表示只应用了部分版本，
-`unknown` 表示应用包结构发生变化，需要更新匹配规则。
+Exit code `0` means every target is patched. `partial` means only an older or
+incomplete variant is present. `unknown` means the application layout changed
+and the matching rules need review.
 
-### 4. 应用补丁
+### 4. Apply the Patch
 
 ```sh
 python3 ~/.local/share/codex-rollback/patch-browser-connector.py --apply
 ```
 
-应用前会把原始文件备份到：
+Original files are backed up under:
 
 ```text
 ~/.local/share/codex-rollback/appbundle-orig/
 ```
 
-### 5. 完整重启应用
-
-必须完整退出并重新启动 `ChatGPT.app`。仅重置 Codex 的 JavaScript 会话
-不会替换已经驻留的浏览器 service 进程。
+### 5. Fully Restart the Application
 
 ```sh
 python3 -c "import subprocess;subprocess.Popen(['/bin/bash','$HOME/.local/share/codex-rollback/restart-once.sh'],start_new_session=True)"
 ```
 
-### 6. 验证
+### 6. Verify
 
-在 Codex 会话中执行：
+In a Codex session:
 
 ```js
 await cua.getState();
@@ -260,36 +271,37 @@ const tab = await cua.createBrowserTab("iab", "https://example.com");
 await tab.getAXState();
 ```
 
-预期结果：
+Expected result:
 
-- 浏览器列表中包含 Chrome 和 Codex In-app Browser。
-- 内置浏览器能够打开 `https://example.com`。
-- `getAXState()` 返回 Example Domain 页面内容。
+- Chrome and Codex In-app Browser are listed.
+- The in-app browser opens `https://example.com`.
+- `getAXState()` returns the Example Domain content.
 
-## 恢复原状
+## Restore the Original Application
 
 ```sh
 bash ~/.local/share/codex-rollback/restore-appbundle.sh
 ```
 
-然后重新启动应用。恢复脚本会：
+Then restart the application. The restore script:
 
-- 从 `appbundle-orig/` 恢复 `browser-service.mjs`。
-- 把 `node_repl-vendor` 恢复为原始的 `node_repl`。
-- 保留备份文件，便于再次检查。
+- restores `browser-service.mjs` from `appbundle-orig/`;
+- restores `node_repl-vendor` as the original `node_repl`;
+- keeps the backups available for later checks.
 
-如果恢复后仍不正常，可从官方安装包重新安装应用。
+If restoration is still incomplete, reinstall the application from the official
+installer.
 
-## 可配置环境变量
+## Environment Variables
 
-| 变量 | 默认值 | 用途 |
+| Variable | Default | Purpose |
 | --- | --- | --- |
-| `CHATGPT_APP` | `/Applications/ChatGPT.app` | 应用路径 |
-| `CODEX_BROWSER_ROLLBACK_DIR` | `~/.local/share/codex-rollback` | 备份和辅助脚本目录 |
-| `CODEX_HOME` | `~/.codex` | Codex 配置和插件缓存目录 |
-| `CODEX_AUTH_SHIM_REAL_CLI` | 自动发现应用内 `codex` 可执行文件 | 显式覆盖 shim 代理的真实 CLI |
+| `CHATGPT_APP` | `/Applications/ChatGPT.app` | Application bundle path |
+| `CODEX_BROWSER_ROLLBACK_DIR` | `~/.local/share/codex-rollback` | Backup and helper directory |
+| `CODEX_HOME` | `~/.codex` | Codex configuration and plugin cache |
+| `CODEX_AUTH_SHIM_REAL_CLI` | Auto-discovered Codex CLI | Explicit real CLI path for the shim |
 
-## 目录结构
+## Repository Layout
 
 ```text
 .
@@ -302,35 +314,37 @@ bash ~/.local/share/codex-rollback/restore-appbundle.sh
     └── restore-appbundle.sh
 ```
 
-## 应用更新后如何适配
+## Adapting to a New Codex Version
 
-新版 Codex 通常会：
+New Codex releases commonly:
 
-- 移动或重命名压缩后的 JavaScript 函数。
-- 增加新的 fail-closed 安全检查。
-- 让旧 marker 仍然存在，但运行路径已经变化。
+- rename or move minified JavaScript functions;
+- add new fail-closed security checks;
+- move bundled executables;
+- leave old patch markers in place while changing the actual execution path.
 
-出现以下情况时需要更新匹配规则：
+Check the patch after every update:
 
 ```sh
 python3 ~/.local/share/codex-rollback/patch-browser-connector.py --check
 ```
 
-如果输出不是稳定的 `patched`，请检查新版
-`browser-service.mjs` 和 `cua_node/bin/node_repl`，再更新
-[`scripts/patch-browser-connector.py`](scripts/patch-browser-connector.py)
-中的路径、marker 和正则表达式。
+If the result is not fully `patched`, inspect the new
+`browser-service.mjs`, `node_repl`, and Codex CLI layout. Update the paths,
+markers, and regular expressions in
+[`scripts/patch-browser-connector.py`](scripts/patch-browser-connector.py).
 
-## 已知限制
+## Known Limitations
 
-- 补丁针对特定 Codex 版本的 minified JavaScript，版本变化后需要重新验证。
-- 只验证了内置浏览器；Chrome 扩展导航未在每次测试中单独执行。
-- CDP 仍然要求 `browser/config.toml` 允许 full CDP，并且 auth shim 能找到
-  当前版本的 Codex CLI。
-- Gate 4 会绕过企业来源策略。
-- 修改应用包会破坏代码签名。
-- 不保证未来版本仍可使用相同的补丁点。
+- The patch depends on minified JavaScript from a specific Codex release.
+- Only the built-in browser has been fully verified; Chrome extension navigation
+  has not been separately exercised in every release.
+- CDP requires full CDP to be enabled in `browser/config.toml` and requires the
+  shim to find the current Codex CLI.
+- Gate 4 bypasses the enterprise origin-policy source.
+- Modifying the application bundle invalidates its code signature.
+- Future versions may move the relevant code or add new gates.
 
-## 许可证
+## License
 
 MIT
