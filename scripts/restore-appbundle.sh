@@ -4,5 +4,4 @@
 # list so the two cannot drift apart.
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-exec /usr/bin/python3 "$SCRIPT_DIR/patch-browser-connector.py" --restore
+exec /usr/bin/python3 /Users/zjlww/.local/share/codex-rollback/patch-browser-connector.py --restore

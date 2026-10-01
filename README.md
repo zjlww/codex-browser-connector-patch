@@ -1,374 +1,214 @@
 # Codex Browser Connector Patch
 
-A local compatibility patch for the macOS Codex / ChatGPT desktop app. It
-restores the built-in browser and Chrome connector when Codex uses API-key
-authentication or a custom model endpoint without a ChatGPT account session.
+A local compatibility patch for the macOS Codex / ChatGPT desktop application.
+It keeps the built-in browser usable when Codex runs with API-key auth or a
+third-party model provider instead of a ChatGPT account.
 
 > This is not an OpenAI project and is not supported by OpenAI. It modifies
-> files inside the installed application and bypasses authentication,
-> request-header, enterprise-policy, and CDP gates. It invalidates the app code
-> signature and may violate the applicable terms of service. Use it only for
-> local compatibility work after understanding the risks.
+> files inside the installed application, bypasses local OpenAI-account checks,
+> and invalidates the vendor code signature. Review the risks and applicable
+> terms before using it.
 
 ## Applicable Version
 
-The fully verified version is:
+The current live-verified build is:
 
 ```text
 Codex Desktop / ChatGPT.app
-CFBundleShortVersionString: 26.928.21956
+CFBundleShortVersionString: 26.928.31416
 ```
 
-Version notes:
+This repository follows rolling application updates. The patch and recovery
+scripts are intentionally current-version only:
 
-- `26.928.21956`: verified, including in-app browser navigation, native Codex
-  computer use, and a raw CDP `Runtime.evaluate` call.
-- Older versions: the scripts retain legacy patch markers, but this public
-  release was not revalidated against older application builds.
-- Newer or unknown versions: support is not guaranteed. Codex updates commonly
-  rename minified functions, move executables, and add fail-closed checks.
-- If `--check` reports `unknown`, `partial`, or an unexpected regex match count,
-  update the matching rules instead of forcing the patch.
+- every `--apply` refreshes the rollback snapshot from the currently installed
+  pristine App;
+- old App-version backups are not retained or reused;
+- if a future update changes a minified anchor, the script fails closed instead
+  of guessing;
+- after an update, re-run `--check` and rebuild the recipes if a target reports
+  `unknown` or an unexpected match count.
 
-> **Important:** Run the patch check after every Codex update. If the update
-> breaks the patch or creates a new browser gate, update this repository before
-> continuing. A surviving old marker does not prove that the patch is still
-> effective.
+## What It Fixes
 
-### Suggested Update Workflow
+The browser path has five practical gates:
 
-1. Check the installed version:
+| Gate | Failure | Current fix |
+| --- | --- | --- |
+| 1 | `Codex auth token is unavailable` | A local shim proxies the Codex app-server and rewrites only the unauthenticated `getAuthStatus` response. |
+| 2 | `User unavailable` | The `chatgpt.com/backend-api/aura/identity` lookup is replaced with a local synthetic user. |
+| 3 | `Unable to load browser request-header policy` | The Statsig request-header gate is disabled locally. |
+| 4 | `The admin-enforced policy could not be verified` | The remote enterprise origin-policy call is replaced with a local `null` decision. Persisted per-origin user permissions still apply. |
+| 5 | `No ChatGPT browser route is available for browser session ...` | Route v3 adopts a live `client-new-thread:` route owned by the asking browser backend, moves the backend key to the real conversation, rekeys the route, and rechecks it. |
 
-   ```sh
-   defaults read /Applications/ChatGPT.app/Contents/Info CFBundleShortVersionString
-   ```
+Gate 5 is the important change in this revision. The older patch only relaxed
+`canServeSession()` or attempted to rekey an existing placeholder; the current
+implementation adopts the route before the backend-state check runs.
 
-2. Check the patch:
+## Why Re-Signing Is Required
 
-   ```sh
-   python3 ~/.local/share/codex-rollback/patch-browser-connector.py --check
-   ```
+`Resources/app.asar` is protected by three integrity guards:
 
-3. If any target is not `patched`, open an issue or pull request and include:
-   - the Codex version;
-   - the complete error message;
-   - the `--check` output;
-   - the changed error string or function fragment from the new
-     `browser-service.mjs`.
+1. the edited entry hash in the ASAR JSON header;
+2. the ASAR header SHA-256 in `Info.plist -> ElectronAsarIntegrity`;
+3. the digest of that dictionary in the Codex Framework `__asar_integrity`
+   Mach-O section.
 
-4. Update the matching rules, re-run the verification, and publish the new
-   revision only after CDP and navigation work again.
+Updating guard 3 invalidates the framework signature, so the patch must be
+followed by an ad-hoc re-sign. The signing step drops restricted entitlements:
 
-## Supported Environment
+- push notifications;
+- app-group sharing;
+- keychain-group sharing.
+
+The vendor signature cannot be restored from a backup. Reinstalling the
+application is the only way back to the original signature. TCC permissions
+tied to the old signature may need to be granted again.
+
+## Requirements
 
 - macOS
-- `/Applications/ChatGPT.app`
-- Apple's `/usr/bin/python3`
-- No root access is required by default, but the current user must be able to
-  write to the application bundle.
+- `/Applications/ChatGPT.app` by default
+- `/usr/bin/python3`
+- permission to write inside the application bundle when applying the host
+  patch
 
-## Background and Root Causes
+For the host patch, use **Terminal.app**. An agent running inside ChatGPT cannot
+patch the App and restart it without terminating its own host process.
 
-The browser runtime can fail at five layers. Gates 1–4 are app/browser-service
-gates; the fifth is the Electron host's browser-session route:
-
-| Gate | Common error | Patch behavior |
-| --- | --- | --- |
-| Authentication | `Codex auth token is unavailable` | A local shim proxies the Codex app-server and rewrites only the unauthenticated `getAuthStatus` response. |
-| Identity lookup | `User unavailable` | The `aura/identity` lookup is replaced with a local synthetic user. |
-| Request-header policy | `Unable to load browser request-header policy` | The Statsig-backed request-header gate returns `false` locally. |
-| Enterprise origin policy | `The admin-enforced policy could not be verified` | `getOriginPolicyDecision()` returns a local `null` result instead of querying the remote enterprise-policy source. |
-| Browser session route | `No ChatGPT browser route is available for browser session ...` | The Electron host must register an IAB route and connect the native browser pipe; on `26.928.21956`, this recovered once the shim could start the real Codex CLI. |
-
-These gates assume a signed-in ChatGPT account and access to remote identity,
-Statsig, and enterprise-policy services. In API-key or custom-provider mode, any
-failed check can terminate the browser flow by design.
-
-The original compatibility patch handled only:
-
-- `getAuthStatus` returning no authentication token;
-- `chatgpt.com/backend-api/aura/identity` returning `User unavailable`.
-
-Codex `26.928.21956` added the Statsig request-header policy and enterprise
-origin-policy checks. The old patch could therefore still report success while
-navigation failed. The current script also reports `partial`, so an old partial
-patch is not mistaken for a complete one.
-
-CDP also depends on the authentication shim successfully starting the real
-Codex CLI. In `26.928.21956`, the CLI moved from:
-
-```text
-Contents/Resources/codex
-```
-
-to:
-
-```text
-Contents/Resources/codex-cli/bin/codex
-```
-
-The old shim therefore exited immediately. Basic browser navigation could still
-work through other local patches, but `configRequirements/read` could not
-complete. `fullCdpAccessState()` then failed closed and the tab did not expose
-the `cdp` capability.
-
-The missing CLI also left the Electron host without a healthy app-server route.
-The host logged:
-
-```text
-No ChatGPT browser route is available for browser session <session-id>
-```
-
-After the shim was repaired, the same host logged:
-
-```text
-captured session route conversationId=<session-id>
-browser-use native pipe listening pipePath=/tmp/codex-browser-use/<id>.sock
-browser_use_iab_backend_startup_ready backend=iab
-```
-
-This is why repairing only gates 1–4 can still leave IAB incomplete. The
-browser-service may advertise an IAB backend, but the Electron host must also
-register the route and native pipe for the current conversation.
-
-## What the Patch Does
-
-### 1. Replaces the `node_repl` Entry Point
-
-The original binary is preserved as:
-
-```text
-/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node_repl-vendor
-```
-
-The new `node_repl` is a small shell wrapper. It sets `CODEX_CLI_PATH` only for
-the Codex node runtime and points it at the local `codex-auth-shim.py`. The
-application's own app-server continues to use the real Codex CLI.
-
-### 2. Rewrites the Local Authentication State in the Shim
-
-`codex-auth-shim.py` starts the real Codex CLI and forwards its JSON-RPC
-messages. The only modified response is the unauthenticated `getAuthStatus`
-result, which is replaced with a local synthetic `chatgpt` token.
-
-The token is used only to pass the local node-runtime check. The repository does
-not contain account credentials, passwords, cookies, or user data.
-
-The shim searches for the real CLI in this order:
-
-1. `CHATGPT_APP/Contents/Resources/codex`
-2. `CHATGPT_APP/Contents/Resources/codex-cli/bin/codex`
-3. `CHATGPT_APP/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex`
-
-An explicit path can also be supplied:
-
-```sh
-export CODEX_AUTH_SHIM_REAL_CLI="/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex"
-```
-
-### 3. Patches the Browser Service Gates
-
-`patch-browser-connector.py` modifies the application-bundle and plugin-cache
-copies of `browser-service.mjs`:
-
-1. `getAuthStatus` is handled by the wrapper and shim.
-2. The `aura/identity` lookup is replaced with a synthetic user.
-3. The Statsig request-header gate returns `false`.
-4. `getOriginPolicyDecision()` returns a local `null` result.
-
-Every original file is backed up under `appbundle-orig/`. Markers allow
-`--check` to distinguish complete, partial, and unknown patch states.
-
-## Security Boundaries
-
-- The scripts do not write ChatGPT usernames, passwords, cookies, or API keys.
-- `codex-auth-shim.py` generates a synthetic token locally for the internal
-  application check.
-- Gate 4 bypasses the application's enterprise origin-policy source. Persisted
-  per-origin user permissions remain a separate check.
-- Modifying the application bundle invalidates its code signature.
-- Every application update can overwrite the patched files. Re-run `--check` and
-  `--apply` after each update.
-
-## Why a Full Application Restart Is Required
-
-The Codex browser service is a long-running process. After changing
-`browser-service.mjs` or `node_repl` on disk, `js_reset` alone does not replace
-the resident browser-service supervisor. The app must be fully stopped and
-started so the new process loads the patched files.
-
-Changing `full_cdp_access_enabled` should also be followed by a full application
-restart, because the resident service may retain the value loaded at startup.
-
-## CDP Support
-
-When `~/.codex/browser/config.toml` contains:
-
-```toml
-full_cdp_access_enabled = true
-```
-
-the repaired shim allows browser-service to complete
-`configRequirements/read` and expose the `cdp` capability on supported in-app
-browser tabs.
-
-Verification:
-
-```js
-await agent.documentation.get("capabilities/tab/cdp");
-const tab = await cua.createBrowserTab("iab", "https://example.com");
-const capabilities = await tab.capabilities.list();
-const cdp = await tab.capabilities.get("cdp");
-const result = await cdp.send("Runtime.evaluate", {
-  expression: "({title: document.title, url: location.href})",
-  returnByValue: true,
-});
-```
-
-Expected capability list:
-
-```text
-pageAssets, webmcp, cdp
-```
-
-The CDP request should return the Example Domain title and URL.
-
-## Usage
-
-### 1. Clone
+## Install and Deploy
 
 ```sh
 git clone https://github.com/zjlww/codex-browser-connector-patch.git
 cd codex-browser-connector-patch
-```
-
-### 2. Deploy the Helper Scripts
-
-```sh
 bash scripts/deploy.sh
 ```
 
-The default destination is:
+The scripts are copied to:
 
 ```text
 ~/.local/share/codex-rollback/
 ```
 
-### 3. Check the Patch State
+## Apply
+
+Use the full apply path:
+
+```sh
+bash ~/.local/share/codex-rollback/apply-host-route.sh
+```
+
+This command:
+
+1. stops the App;
+2. refreshes the current-version vendor rollback point;
+3. patches gates 1-4;
+4. patches the route v3 host code;
+5. updates all three ASAR/framework integrity hashes;
+6. re-signs the App ad-hoc;
+7. relaunches and verifies that the App stays up;
+8. automatically restores the host files if startup fails.
+
+Do not apply only `patch-browser-connector.py --apply` to the live App: the
+host patch needs the follow-up re-sign performed by `apply-host-route.sh`.
+
+## Check
 
 ```sh
 python3 ~/.local/share/codex-rollback/patch-browser-connector.py --check
 ```
 
-Exit code `0` means every target is patched. `partial` means only an older or
-incomplete variant is present. `unknown` means the application layout changed
-and the matching rules need review.
-
-### 4. Apply the Patch
-
-```sh
-python3 ~/.local/share/codex-rollback/patch-browser-connector.py --apply
-```
-
-Original files are backed up under:
+Expected current state:
 
 ```text
-~/.local/share/codex-rollback/appbundle-orig/
+app version: 26.928.31416
+patched ...
+patched ... app.asar
 ```
 
-### 5. Fully Restart the Application
+The check fails when a target is `unpatched`, `partial`, `unknown`,
+`integrity-broken`, `header-integrity-broken`, or
+`dictionary-digest-stale`.
 
-```sh
-python3 -c "import subprocess;subprocess.Popen(['/bin/bash','$HOME/.local/share/codex-rollback/restart-once.sh'],start_new_session=True)"
-```
+## Verify Browser Use
 
-### 6. Verify
-
-In a Codex session:
+In a Codex task:
 
 ```js
-await cua.getState();
-const tab = await cua.createBrowserTab("iab", "https://example.com");
-await tab.getAXState();
+await cua.getState()
+const tab = await cua.createBrowserTab("iab", "https://example.com")
+await cua.listTabs({ browser: "iab" })
+await tab.getAXState()
 ```
 
-Expected result:
+The expected result is that the in-app browser appears in inventory, the tab
+binds successfully, and the page state is readable. If binding fails, inspect
+the desktop log for `IAB_ROUTE_DIAG`; it lists the current route keys.
 
-- Chrome and Codex In-app Browser are listed.
-- The in-app browser opens `https://example.com`.
-- `getAXState()` returns the Example Domain content.
+## Restore
 
-## Restore the Original Application
+Restore only the host files:
+
+```sh
+bash ~/.local/share/codex-rollback/restore-host-asar.sh
+```
+
+Restore every patched file:
 
 ```sh
 bash ~/.local/share/codex-rollback/restore-appbundle.sh
 ```
 
-Then restart the application. The restore script:
+Last-resort signature recovery:
 
-- restores `browser-service.mjs` from `appbundle-orig/`;
-- restores `node_repl-vendor` as the original `node_repl`;
-- keeps the backups available for later checks.
+```sh
+bash ~/.local/share/codex-rollback/recover-code-signature.sh
+```
 
-If restoration is still incomplete, reinstall the application from the official
-installer.
+The rollback data is under:
+
+```text
+~/.local/share/codex-rollback/appbundle-orig/
+```
+
+It contains the current-version vendor files only.
 
 ## Environment Variables
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `CHATGPT_APP` | `/Applications/ChatGPT.app` | Application bundle path |
-| `CODEX_BROWSER_ROLLBACK_DIR` | `~/.local/share/codex-rollback` | Backup and helper directory |
-| `CODEX_HOME` | `~/.codex` | Codex configuration and plugin cache |
-| `CODEX_AUTH_SHIM_REAL_CLI` | Auto-discovered Codex CLI | Explicit real CLI path for the shim |
+| `CHATGPT_APP` | `/Applications/ChatGPT.app` | App bundle path |
+| `CODEX_BROWSER_ROLLBACK_DIR` | `~/.local/share/codex-rollback` | Helper and backup directory |
+| `CODEX_AUTH_SHIM_REAL_CLI` | auto-detected | Explicit Codex CLI path for the shim |
 
-## Repository Layout
+## Security Boundaries
 
-```text
-.
-├── README.md
-└── scripts
-    ├── codex-auth-shim.py
-    ├── deploy.sh
-    ├── patch-browser-connector.py
-    ├── restart-once.sh
-    └── restore-appbundle.sh
-```
+- No ChatGPT credentials, passwords, cookies, API keys, or account tokens are
+  stored in this repository.
+- `codex-auth-shim.py` creates a synthetic local token only to satisfy the
+  node-runtime gate.
+- Gate 4 replaces the remote enterprise-policy source with a local decision;
+  this is an intentional compatibility tradeoff.
+- Gate 5 modifies the closed Electron host and invalidates the signature.
+- Every application update can overwrite the patched files. Re-run `--check`
+  and `apply-host-route.sh` after an update.
 
-## Adapting to a New Codex Version
+## Update Workflow
 
-New Codex releases commonly:
-
-- rename or move minified JavaScript functions;
-- add new fail-closed security checks;
-- move bundled executables;
-- leave old patch markers in place while changing the actual execution path.
-
-Check the patch after every update:
+After a ChatGPT/Codex update:
 
 ```sh
+defaults read /Applications/ChatGPT.app/Contents/Info CFBundleShortVersionString
 python3 ~/.local/share/codex-rollback/patch-browser-connector.py --check
 ```
 
-If the result is not fully `patched`, inspect the new
-`browser-service.mjs`, `node_repl`, and Codex CLI layout. Update the paths,
-markers, and regular expressions in
-[`scripts/patch-browser-connector.py`](scripts/patch-browser-connector.py).
+If the App is pristine and the anchors still match:
 
-## Known Limitations
+```sh
+bash ~/.local/share/codex-rollback/apply-host-route.sh
+```
 
-- The patch depends on minified JavaScript from a specific Codex release.
-- Gate 5 is host-side route registration. If `No ChatGPT browser route` remains
-  after the shim and app-server are healthy, the failure is outside the four
-  browser-service gates and requires a host/session lifecycle fix.
-- Only the built-in browser has been fully verified; Chrome extension navigation
-  has not been separately exercised in every release.
-- CDP requires full CDP to be enabled in `browser/config.toml` and requires the
-  shim to find the current Codex CLI.
-- Gate 4 bypasses the enterprise origin-policy source.
-- Modifying the application bundle invalidates its code signature.
-- Future versions may move the relevant code or add new gates.
-
-## License
-
-MIT
+If the script reports `unknown` or an unexpected regex match count, extract the
+changed minified function from the new `app.asar` or `browser-service.mjs`,
+update the matching recipe in `scripts/patch-browser-connector.py`, validate on
+a copy, and publish the new revision.
